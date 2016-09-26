@@ -1,15 +1,18 @@
 package main
 
 import (
+	"github.com/labstack/echo"
+	"github.com/labstack/echo/engine/fasthttp"
 	"github.com/oschwald/geoip2-golang"
 	"log"
 	"net"
+	"net/http"
 	"os"
 
-	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/middleware"
 )
 
-type GeoData struct {
+type geoData struct {
 	City      string  `json:"city"`
 	Country   string  `json:"country"`
 	IsoCode   string  `json:"country_code"`
@@ -20,36 +23,40 @@ type GeoData struct {
 	Status    string  `json:"status"`
 }
 
-type GeoDataErr struct {
+type geoDataErr struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
-	IP string `json:"ip"`
+	IP      string `json:"ip"`
 }
 
 func main() {
 	port := os.Getenv("PORT")
+	mmdbPath := os.Getenv("MMDB_PATH")
 
 	if port == "" {
 		log.Fatal("$PORT must be set")
 	}
 
-	db, err := geoip2.Open("GeoLite2-City.mmdb")
+	if mmdbPath == "" {
+		mmdbPath = "GeoLite2-City.mmdb"
+	}
+
+	db, err := geoip2.Open(mmdbPath)
 	defer db.Close()
 
-	router := gin.New()
-	router.Use(gin.Logger())
-	router.Use(gin.Recovery())
+	e := echo.New()
+	e.Use(middleware.Logger())
+	e.Use(middleware.Recover())
 
-	router.GET("/ip/:ip", func(c *gin.Context) {
-		var successResponce GeoData
-		var errResponse GeoDataErr
+	e.GET("/ip/:ip", func(c echo.Context) error {
+		var successResponce geoData
+		var errResponse geoDataErr
 
 		if err != nil {
 			errResponse.Message = err.Error()
 			errResponse.Status = "fail"
 			errResponse.IP = ""
-			c.JSON(500, errResponse)
-			return
+			return c.JSON(http.StatusInternalServerError, errResponse)
 		}
 
 		passedIP := c.Param("ip")
@@ -58,7 +65,7 @@ func main() {
 		if passedIP != "" {
 			clientIP = passedIP
 		} else {
-			clientIP = c.ClientIP()
+			clientIP = c.Request().RealIP()
 		}
 
 		ip := net.ParseIP(clientIP)
@@ -67,8 +74,7 @@ func main() {
 			errResponse.Message = err.Error()
 			errResponse.Status = "fail"
 			errResponse.IP = clientIP
-			c.JSON(500, errResponse)
-			return
+			return c.JSON(http.StatusNotFound, errResponse)
 		}
 		successResponce.City = record.City.Names["en"]
 		successResponce.Country = record.Country.Names["en"]
@@ -79,10 +85,10 @@ func main() {
 		successResponce.IP = clientIP
 		successResponce.Status = "success"
 
-		c.JSON(200, successResponce)
+		return c.JSON(http.StatusOK, successResponce)
 	})
 
-	router.Run(":" + port)
+	e.Run(fasthttp.New(":" + port))
 }
 
 func checkErr(err error) {
