@@ -57,7 +57,7 @@ func main() {
 
 	go func() {
 		for {
-			time.Sleep(1 * time.Minute)
+			time.Sleep(24 * time.Hour)
 
 			curTime := time.Now().UTC()
 			month := fmt.Sprintf("%02d", curTime.Month())
