@@ -3,18 +3,19 @@ package main
 import (
 	"fmt"
 	"github.com/labstack/echo"
-	"github.com/labstack/echo/engine/fasthttp"
+	"github.com/labstack/echo/engine/standard"
+	"github.com/labstack/echo/middleware"
 	"github.com/oschwald/geoip2-golang"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
-
-	"github.com/labstack/echo/middleware"
 )
 
 var db *geoip2.Reader
+var mutex = &sync.Mutex{}
 
 type geoData struct {
 	City      string      `json:"city"`
@@ -56,19 +57,20 @@ func main() {
 	checkErr(openerr)
 
 	go func() {
-		for {
-			time.Sleep(24 * time.Hour)
-
+		for range time.Tick(24 * time.Hour) {
 			curTime := time.Now().UTC()
-			month := fmt.Sprintf("%02d", curTime.Month())
-			newfilepath := "GeoLite2-City-" + month + ".mmdb"
+			newfilepath := fmt.Sprintf("GeoLite2-City-%02d.mmdb", curTime.Month())
 			firstTues := firstTuesday(curTime.Year(), curTime.Month())
 			if firstTues == curTime.Day() {
 				if _, err := os.Stat(newfilepath); err == nil {
+					mutex.Lock()
+					println("mutex locked")
 					db.Close()
 					//exists, so open the new one
 					println("opening the new one")
 					db, openerr = geoip2.Open(newfilepath)
+					mutex.Unlock()
+					println("mutex unlocked")
 					checkErr(openerr)
 				}
 			}
@@ -80,12 +82,9 @@ func main() {
 
 	for i := 0; i < 300; i++ {
 		go func(ipin chan localChanData) {
-			for {
-				select {
-				case input := <-ipin:
-					record := queryDB(input.ip)
-					input.ipout <- record
-				}
+			for input := range ipin {
+				record := queryDB(input.ip)
+				input.ipout <- record
 			}
 		}(ipin)
 	}
@@ -106,27 +105,26 @@ func main() {
 		data := make(chan *geoData)
 		defer close(data)
 		ipin <- localChanData{clientIP, data}
-		for {
-			select {
-			case output := <-data:
-				if output.Err != nil {
-					return c.JSON(http.StatusNotFound, output.Err)
-				}
-
-				return c.JSON(http.StatusOK, output)
+		for output := range data {
+			if output.Err != nil {
+				return c.JSON(http.StatusNotFound, output.Err)
 			}
+
+			return c.JSON(http.StatusOK, output)
 		}
+
+		return nil
 	})
 
 	e.Logger().Debug("Starting on port " + port)
-	e.Run(fasthttp.New(":" + port))
+	e.Run(standard.New(":" + port))
 }
 
 func queryDB(strip string) *geoData {
 	ip := net.ParseIP(strip)
 	record, err := db.City(ip)
-	var data geoData
 	if err != nil {
+		var data geoData
 		var geoerr geoDataErr
 		geoerr.IP = strip
 		geoerr.Message = err.Error()
@@ -135,16 +133,8 @@ func queryDB(strip string) *geoData {
 
 		return &data
 	}
-	data.City = record.City.Names["en"]
-	data.Country = record.Country.Names["en"]
-	data.IsoCode = record.Country.IsoCode
-	data.Latitude = record.Location.Latitude
-	data.Longitude = record.Location.Longitude
-	data.TimeZone = record.Location.TimeZone
-	data.IP = strip
-	data.Status = "success"
 
-	return &data
+	return &geoData{record.City.Names["en"], record.Country.Names["en"], record.Country.IsoCode, record.Location.Latitude, record.Location.Longitude, record.Location.TimeZone, strip, "success", nil}
 }
 
 // firstTuesday returns the day of the first Tuesday in the given month.
