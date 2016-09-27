@@ -93,8 +93,8 @@ func main() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
-	e.GET("/ip/:ip", func(c echo.Context) error {
-		passedIP := c.Param("ip")
+	e.GET("/json", func(c echo.Context) error {
+		passedIP := c.QueryParam("ip")
 
 		var clientIP string
 		if passedIP != "" {
