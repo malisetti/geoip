@@ -91,6 +91,7 @@ func main() {
 
 	e := echo.New()
 	e.Use(middleware.Logger())
+	e.Use(middleware.Gzip())
 	e.Use(middleware.Recover())
 
 	e.GET("/json", func(c echo.Context) error {
