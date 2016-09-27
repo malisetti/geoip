@@ -1,11 +1,13 @@
 package main
 
 import (
+	"compress/gzip"
 	"fmt"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/engine/standard"
 	"github.com/labstack/echo/middleware"
 	"github.com/oschwald/geoip2-golang"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -14,7 +16,10 @@ import (
 	"time"
 )
 
+const mmdburl = "http://geolite.maxmind.com/download/geoip/database/GeoLite2-City.mmdb.gz"
+
 var db *geoip2.Reader
+var fileDownloadCount = 0
 var mutex = &sync.Mutex{}
 
 type geoData struct {
@@ -51,6 +56,14 @@ func main() {
 	if mmdbPath == "" {
 		mmdbPath = "GeoLite2-City.mmdb"
 	}
+	var serverETag string
+
+	headresp, headerr := http.Head(mmdburl)
+	if headerr != nil {
+		println(headerr.Error())
+	} else {
+		serverETag = headresp.Header.Get("ETag")
+	}
 
 	var openerr error
 	db, openerr = geoip2.Open(mmdbPath)
@@ -58,21 +71,79 @@ func main() {
 
 	go func() {
 		for range time.Tick(24 * time.Hour) {
-			curTime := time.Now().UTC()
-			newfilepath := fmt.Sprintf("GeoLite2-City-%02d.mmdb", curTime.Month())
-			firstTues := firstTuesday(curTime.Year(), curTime.Month())
-			if firstTues == curTime.Day() {
-				if _, err := os.Stat(newfilepath); err == nil {
-					mutex.Lock()
-					println("mutex locked")
-					db.Close()
-					//exists, so open the new one
-					println("opening the new one")
-					db, openerr = geoip2.Open(newfilepath)
-					mutex.Unlock()
-					println("mutex unlocked")
-					checkErr(openerr)
+			newfilepath := fmt.Sprintf("GeoLite2-City-%d.mmdb", fileDownloadCount)
+
+			resp, headerr := http.Head(mmdburl)
+			if headerr != nil {
+				continue
+			}
+
+			ETag := resp.Header.Get("Last-Modified")
+			lastModified, perr := time.Parse(http.TimeFormat, resp.Header.Get("Last-Modified"))
+			if perr != nil {
+				println(perr.Error())
+				continue
+			}
+
+			if ETag != serverETag || lastModified.After(time.Now()) {
+				out, fileerr := os.Create(newfilepath)
+				if fileerr != nil {
+					println(fileerr.Error())
 				}
+				defer out.Close()
+
+				resp, downloaderr := http.Get(mmdburl)
+				if downloaderr != nil {
+					println(downloaderr.Error())
+				}
+
+				defer resp.Body.Close()
+
+				r, unziperr := gzip.NewReader(resp.Body)
+				defer r.Close()
+
+				io.Copy(out, r)
+
+				if unziperr != nil {
+					println("downloaded the new file")
+				}
+
+				_, copyerr := io.Copy(out, resp.Body)
+				if copyerr != nil {
+					println(copyerr.Error())
+					continue
+				}
+
+				mutex.Lock()
+
+				db.Close()
+				//exists, so open the new one
+				println("opening the new one")
+
+				db, openerr = geoip2.Open(newfilepath)
+
+				mutex.Unlock()
+
+				if openerr != nil {
+					mutex.Lock()
+
+					println("opening the old one")
+
+					var retryErr error
+					db, retryErr = geoip2.Open(mmdbPath)
+					checkErr(retryErr)
+
+					mutex.Unlock()
+
+				} else {
+					os.Remove(mmdbPath)
+					mmdbPath = newfilepath
+					serverETag = ETag
+				}
+
+				mutex.Lock()
+				fileDownloadCount++
+				mutex.Unlock()
 			}
 		}
 	}()
@@ -136,13 +207,6 @@ func queryDB(strip string) *geoData {
 	}
 
 	return &geoData{record.City.Names["en"], record.Country.Names["en"], record.Country.IsoCode, record.Location.Latitude, record.Location.Longitude, record.Location.TimeZone, strip, "success", nil}
-}
-
-// firstTuesday returns the day of the first Tuesday in the given month.
-func firstTuesday(year int, month time.Month) int {
-	t := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
-
-	return (8-int(t.Weekday()))%7 + 2
 }
 
 func checkErr(err error) {
