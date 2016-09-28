@@ -162,8 +162,9 @@ func main() {
 
 	e := echo.New()
 	e.Use(middleware.Logger())
-	e.Use(middleware.Gzip())
 	e.Use(middleware.Recover())
+	e.Use(middleware.Gzip())
+	e.Use(middleware.CORS())
 
 	e.GET("/json", func(c echo.Context) error {
 		passedIP := c.QueryParam("ip")
