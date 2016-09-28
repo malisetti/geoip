@@ -174,6 +174,9 @@ func main() {
 			clientIP = passedIP
 		} else {
 			clientIP = c.Request().RealIP()
+			if clientIP == "" {
+				clientIP = c.Request().RemoteAddress()
+			}
 		}
 		data := make(chan *geoData)
 		defer close(data)
